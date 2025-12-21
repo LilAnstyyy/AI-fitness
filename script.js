@@ -23,17 +23,14 @@ async function initPoseLandmarker() {
 
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: {
-      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       delegate: "GPU"
     },
     runningMode: "VIDEO",
-    numPoses: 1,
-    minPoseDetectionConfidence: 0.5,
-    minPosePresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5
+    numPoses: 1
   });
 
-  feedbackEl.textContent = "Модель готова. Встаньте в кадр полностью!";
+  feedbackEl.textContent = "Модель загружена и готова! Встаньте в кадр.";
 }
 
 function calculateAngle(a, b, c) {
@@ -45,11 +42,13 @@ function calculateAngle(a, b, c) {
 
 function isBodyHorizontal(landmarks) {
   const lShoulder = landmarks[11];
+  const rShoulder = landmarks[12];
   const lHip = landmarks[23];
-  const lKnee = landmarks[25];
-  const hipToShoulderY = Math.abs(lHip.y - lShoulder.y);
-  const hipToKneeY = Math.abs(lHip.y - lKnee.y);
-  return hipToShoulderY < 0.2 && hipToKneeY > 0.3; // Тело горизонтально, ноги вниз
+  const rHip = landmarks[24];
+  // Средняя высота плеч и бедер
+  const shoulderY = (lShoulder.y + rShoulder.y) / 2;
+  const hipY = (lHip.y + rHip.y) / 2;
+  return Math.abs(shoulderY - hipY) < 0.15; // Плечи и бедра на одной высоте — горизонтально
 }
 
 function detectExercise(landmarks) {
@@ -64,26 +63,39 @@ function detectExercise(landmarks) {
 
   const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
 
-  // Сначала проверяем squats или lunges (если колени согнуты)
+  // Если колени согнуты — squats или lunges
   if (avgKneeAngle < 150) {
-    if (kneeDiff > 35) return 'lunges';
+    if (kneeDiff > 40) return 'lunges';
     return 'squats';
   }
 
-  // Только если колени прямые и тело горизонтальное — plank
+  // Планка только если тело горизонтальное, колени прямые и линия прямая
   if (avgKneeAngle > 160 && bodyLineAngle > 160 && isBodyHorizontal(landmarks)) {
     return 'plank';
   }
 
-  return 'none'; // Стоячее положение или неясно
+  return 'none';
 }
 
-// giveFeedback и processResults остаются как в предыдущей версии (с фиксом перерисовки видео)
-
-function processResults(results, isVideo = true) {
-  if (isVideo) {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+function giveFeedback(exercise, landmarks) {
+  if (exercise === 'none') {
+    feedbackEl.style.color = '#ffd93d';
+    return 'Стартовая позиция. Начните упражнение!';
   }
+
+  // ... (ваш предыдущий код фидбека для squats, lunges, plank — вставьте его сюда без изменений)
+
+  // Пример для squats (остальное аналогично)
+  if (exercise === 'squats') {
+    // ваш код с углами и счётом reps
+  }
+
+  // и т.д.
+}
+
+function processResults(results, sourceImage) {
+  // Перерисовываем исходное изображение (видео или фото)
+  ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
 
   if (results.landmarks && results.landmarks.length > 0) {
     const landmarks = results.landmarks[0];
@@ -95,6 +107,7 @@ function processResults(results, isVideo = true) {
     if (detected !== 'none') currentExercise = detected;
 
     if (currentExercise !== previousExercise) {
+      // сброс счётчиков
       previousExercise = currentExercise;
       repCount = 0; repCountEl.textContent = '0';
       plankStartTime = 0; timerEl.textContent = '0';
@@ -106,10 +119,59 @@ function processResults(results, isVideo = true) {
 
     feedbackEl.textContent = giveFeedback(currentExercise, landmarks);
   } else {
-    if (isVideo) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    feedbackEl.textContent = 'Поза не обнаружена. Попробуйте фронтальный или полу-боковой ракурс.';
-    feedbackEl.style.color = '#ffd93d';
+    feedbackEl.textContent = 'Поза не обнаружена. Попробуйте лучше осветить тело или полу-боковой ракурс.';
+    feedbackEl.style.color = '#ff4757';
   }
 }
 
-// runVideoDetection и обработчики камеры/фото — без изменений (с фиксом ctx.drawImage)
+function runVideoDetection() {
+  if (!poseLandmarker) return;
+  const results = poseLandmarker.detectForVideo(video, performance.now());
+  processResults(results, video);
+  requestAnimationFrame(runVideoDetection);
+}
+
+// Камера
+document.getElementById('startButton').addEventListener('click', async () => {
+  if (!poseLandmarker) await initPoseLandmarker();
+
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
+    .then(stream => {
+      video.srcObject = stream;
+      video.play();
+      video.onloadedmetadata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        runVideoDetection();
+      };
+    })
+    .catch(err => {
+      feedbackEl.textContent = "Ошибка доступа к камере: " + err.message;
+      console.error(err);
+    });
+});
+
+// Фото
+document.getElementById('analyzePhotoButton').addEventListener('click', async () => {
+  const fileInput = document.getElementById('photoUpload');
+  if (!fileInput.files || fileInput.files.length === 0) {
+    feedbackEl.textContent = 'Выберите фото!';
+    return;
+  }
+
+  if (!poseLandmarker) await initPoseLandmarker();
+
+  const file = fileInput.files[0];
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+
+    const mpImage = new mp.Image(img, mp.ImageFormat.SRGB);
+    const results = poseLandmarker.detect(mpImage);
+
+    processResults(results, img);
+  };
+});
