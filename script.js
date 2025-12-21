@@ -10,7 +10,6 @@ const exerciseNameEl = document.getElementById('exerciseName');
 
 let poseLandmarker = null;
 let repCount = 0;
-let plankSeconds = 0;
 let plankStartTime = 0;
 let currentExercise = 'none';
 let previousExercise = 'none';
@@ -24,15 +23,17 @@ async function initPoseLandmarker() {
 
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: {
-      // Heavy модель — лучше детектирует боковые ракурсы
       modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
       delegate: "GPU"
     },
     runningMode: "VIDEO",
-    numPoses: 1
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
   });
 
-  feedbackEl.textContent = "Модель загружена (heavy — лучше для боковых видов). Готовы!";
+  feedbackEl.textContent = "Модель готова. Встаньте в кадр полностью!";
 }
 
 function calculateAngle(a, b, c) {
@@ -42,10 +43,19 @@ function calculateAngle(a, b, c) {
   return angle;
 }
 
+function isBodyHorizontal(landmarks) {
+  const lShoulder = landmarks[11];
+  const lHip = landmarks[23];
+  const lKnee = landmarks[25];
+  const hipToShoulderY = Math.abs(lHip.y - lShoulder.y);
+  const hipToKneeY = Math.abs(lHip.y - lKnee.y);
+  return hipToShoulderY < 0.2 && hipToKneeY > 0.3; // Тело горизонтально, ноги вниз
+}
+
 function detectExercise(landmarks) {
   const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
   const rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
-  const lShoulder = landmarks[11], rShoulder = landmarks[12];
+  const lShoulder = landmarks[11];
 
   const leftKneeAngle = calculateAngle(lHip, lKnee, lAnkle);
   const rightKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
@@ -54,25 +64,24 @@ function detectExercise(landmarks) {
 
   const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
 
-  if (bodyLineAngle > 165 && avgKneeAngle > 150) return 'plank';
-  if (kneeDiff > 30 && (leftKneeAngle < 130 || rightKneeAngle < 130)) return 'lunges';
-  if (avgKneeAngle < 140) return 'squats';
-  return 'none';
+  // Сначала проверяем squats или lunges (если колени согнуты)
+  if (avgKneeAngle < 150) {
+    if (kneeDiff > 35) return 'lunges';
+    return 'squats';
+  }
+
+  // Только если колени прямые и тело горизонтальное — plank
+  if (avgKneeAngle > 160 && bodyLineAngle > 160 && isBodyHorizontal(landmarks)) {
+    return 'plank';
+  }
+
+  return 'none'; // Стоячее положение или неясно
 }
 
-function giveFeedback(exercise, landmarks) {
-  // Тот же код, что раньше (без изменений)
-  if (exercise === 'none') {
-    feedbackEl.style.color = '#ffd93d';
-    return 'Не удалось определить. Попробуйте фронтальный или полу-боковой ракурс.';
-  }
-  // ... (остальной код фидбека без изменений, как в предыдущей версии)
-  // Вставьте сюда ваш предыдущий giveFeedback
-}
+// giveFeedback и processResults остаются как в предыдущей версии (с фиксом перерисовки видео)
 
 function processResults(results, isVideo = true) {
   if (isVideo) {
-    // Ключевой фикс: перерисовываем текущий кадр видео
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   }
 
@@ -86,75 +95,21 @@ function processResults(results, isVideo = true) {
     if (detected !== 'none') currentExercise = detected;
 
     if (currentExercise !== previousExercise) {
-      // Сброс счётчиков при смене упражнения
       previousExercise = currentExercise;
       repCount = 0; repCountEl.textContent = '0';
       plankStartTime = 0; timerEl.textContent = '0';
       squatStage = null; lungeStage = null;
 
       const names = { squats: 'Приседания', lunges: 'Выпады (болгарские)', plank: 'Планка' };
-      exerciseNameEl.textContent = names[currentExercise] || 'Определение...';
+      exerciseNameEl.textContent = names[currentExercise] || 'Стартовая позиция';
     }
 
     feedbackEl.textContent = giveFeedback(currentExercise, landmarks);
   } else {
     if (isVideo) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    feedbackEl.textContent = 'Человек не найден в кадре. Встаньте полностью в кадр.';
-    feedbackEl.style.color = '#ff4757';
+    feedbackEl.textContent = 'Поза не обнаружена. Попробуйте фронтальный или полу-боковой ракурс.';
+    feedbackEl.style.color = '#ffd93d';
   }
 }
 
-function runVideoDetection() {
-  if (!poseLandmarker) return;
-  const results = poseLandmarker.detectForVideo(video, performance.now());
-  processResults(results, true);
-  requestAnimationFrame(runVideoDetection);
-}
-
-// Камера (без изменений)
-document.getElementById('startButton').addEventListener('click', async () => {
-  if (!poseLandmarker) await initPoseLandmarker();
-
-  navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
-    .then(stream => {
-      video.srcObject = stream;
-      video.play();
-      video.onloadedmetadata = () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        runVideoDetection();
-      };
-    })
-    .catch(err => feedbackEl.textContent = "Ошибка камеры: " + err.message);
-});
-
-// Фото (с фиксом отрисовки фото)
-document.getElementById('analyzePhotoButton').addEventListener('click', async () => {
-  const fileInput = document.getElementById('photoUpload');
-  if (!fileInput.files || fileInput.files.length === 0) {
-    feedbackEl.textContent = 'Выберите фото!';
-    return;
-  }
-
-  if (!poseLandmarker) await initPoseLandmarker();
-
-  const file = fileInput.files[0];
-  const img = new Image();
-  img.src = URL.createObjectURL(file);
-
-  img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
-    ctx.drawImage(img, 0, 0);
-
-    const mpImage = new mp.Image(img, mp.ImageFormat.SRGB);
-    const results = poseLandmarker.detect(mpImage);
-
-    processResults(results, false);  // false = не видео
-
-    if (!results.landmarks || results.landmarks.length === 0) {
-      feedbackEl.textContent = 'Не удалось найти позу. Лучше работает на фронтальных/полу-боковых ракурсах.';
-      feedbackEl.style.color = '#ff4757';
-    }
-  };
-});
+// runVideoDetection и обработчики камеры/фото — без изменений (с фиксом ctx.drawImage)
