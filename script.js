@@ -30,7 +30,8 @@ async function initPoseLandmarker() {
     numPoses: 1
   });
 
-  feedbackEl.textContent = "Модель загружена и готова! Встаньте в кадр.";
+  feedbackEl.textContent = "Модель загружена! Начните тренировку или загрузите фото.";
+  feedbackEl.style.color = '#ffd93d';
 }
 
 function calculateAngle(a, b, c) {
@@ -45,10 +46,9 @@ function isBodyHorizontal(landmarks) {
   const rShoulder = landmarks[12];
   const lHip = landmarks[23];
   const rHip = landmarks[24];
-  // Средняя высота плеч и бедер
   const shoulderY = (lShoulder.y + rShoulder.y) / 2;
   const hipY = (lHip.y + rHip.y) / 2;
-  return Math.abs(shoulderY - hipY) < 0.15; // Плечи и бедра на одной высоте — горизонтально
+  return Math.abs(shoulderY - hipY) < 0.15;
 }
 
 function detectExercise(landmarks) {
@@ -63,13 +63,11 @@ function detectExercise(landmarks) {
 
   const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
 
-  // Если колени согнуты — squats или lunges
   if (avgKneeAngle < 150) {
     if (kneeDiff > 40) return 'lunges';
     return 'squats';
   }
 
-  // Планка только если тело горизонтальное, колени прямые и линия прямая
   if (avgKneeAngle > 160 && bodyLineAngle > 160 && isBodyHorizontal(landmarks)) {
     return 'plank';
   }
@@ -78,23 +76,85 @@ function detectExercise(landmarks) {
 }
 
 function giveFeedback(exercise, landmarks) {
+  feedbackEl.style.color = '#ffd93d'; // Жёлтый по умолчанию
+
   if (exercise === 'none') {
-    feedbackEl.style.color = '#ffd93d';
     return 'Стартовая позиция. Начните упражнение!';
   }
 
-  // ... (ваш предыдущий код фидбека для squats, lunges, plank — вставьте его сюда без изменений)
+  const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
+  const rHip = landmarks[24], rKnee = landmarks[26];
+  const lShoulder = landmarks[11];
 
-  // Пример для squats (остальное аналогично)
+  let msg = '';
+
   if (exercise === 'squats') {
-    // ваш код с углами и счётом reps
+    const avgKneeAngle = (calculateAngle(lHip, lKnee, lAnkle) + calculateAngle(rHip, rKnee, rAnkle)) / 2;
+    const hipAngle = calculateAngle(lShoulder, lHip, lKnee);
+
+    if (avgKneeAngle < 100 && hipAngle > 140) {
+      msg = 'Отлично! Глубокий присед, спина прямая 🔥';
+      feedbackEl.style.color = '#00ff00';
+    } else if (avgKneeAngle < 100) {
+      msg = 'Глубоко, но спина наклоняется — держите грудь вверх!';
+      feedbackEl.style.color = '#ff4757';
+    } else {
+      msg = 'Приседайте глубже (колени под ~90°)';
+      feedbackEl.style.color = '#ff4757';
+    }
+
+    if (avgKneeAngle < 95) squatStage = 'down';
+    if (avgKneeAngle > 155 && squatStage === 'down') {
+      squatStage = 'up';
+      repCount++;
+      repCountEl.textContent = repCount;
+      msg = 'Супер! +1 повторение 💪';
+      feedbackEl.style.color = '#00ff00';
+    }
+
+  } else if (exercise === 'lunges') {
+    const leftAngle = calculateAngle(lHip, lKnee, lAnkle);
+    const rightAngle = calculateAngle(rHip, rKnee, rAnkle);
+    const frontAngle = Math.min(leftAngle, rightAngle);
+
+    if (frontAngle > 80 && frontAngle < 100) {
+      msg = 'Идеально! Переднее колено под 90° 👌';
+      feedbackEl.style.color = '#00ff00';
+    } else if (frontAngle < 80) {
+      msg = 'Согните переднюю ногу сильнее';
+      feedbackEl.style.color = '#ff4757';
+    } else {
+      msg = 'Не переразгибайте переднее колено';
+      feedbackEl.style.color = '#ff4757';
+    }
+
+    if (frontAngle < 85) lungeStage = 'down';
+    if (frontAngle > 140 && lungeStage === 'down') {
+      lungeStage = 'up';
+      repCount++;
+      repCountEl.textContent = repCount;
+    }
+
+  } else if (exercise === 'plank') {
+    const lineAngle = calculateAngle(lShoulder, lHip, lAnkle);
+    if (lineAngle > 170) {
+      if (plankStartTime === 0) plankStartTime = Date.now();
+      const seconds = Math.floor((Date.now() - plankStartTime) / 1000);
+      timerEl.textContent = seconds;
+      msg = 'Держите! Тело прямое как доска 💪';
+      feedbackEl.style.color = '#00ff00';
+    } else {
+      msg = 'Провисает спина или таз — выпрямитесь!';
+      feedbackEl.style.color = '#ff4757';
+      plankStartTime = 0;
+      timerEl.textContent = '0';
+    }
   }
 
-  // и т.д.
+  return msg;
 }
 
 function processResults(results, sourceImage) {
-  // Перерисовываем исходное изображение (видео или фото)
   ctx.drawImage(sourceImage, 0, 0, canvas.width, canvas.height);
 
   if (results.landmarks && results.landmarks.length > 0) {
@@ -107,11 +167,13 @@ function processResults(results, sourceImage) {
     if (detected !== 'none') currentExercise = detected;
 
     if (currentExercise !== previousExercise) {
-      // сброс счётчиков
       previousExercise = currentExercise;
-      repCount = 0; repCountEl.textContent = '0';
-      plankStartTime = 0; timerEl.textContent = '0';
-      squatStage = null; lungeStage = null;
+      repCount = 0;
+      repCountEl.textContent = '0';
+      plankStartTime = 0;
+      timerEl.textContent = '0';
+      squatStage = null;
+      lungeStage = null;
 
       const names = { squats: 'Приседания', lunges: 'Выпады (болгарские)', plank: 'Планка' };
       exerciseNameEl.textContent = names[currentExercise] || 'Стартовая позиция';
@@ -119,7 +181,7 @@ function processResults(results, sourceImage) {
 
     feedbackEl.textContent = giveFeedback(currentExercise, landmarks);
   } else {
-    feedbackEl.textContent = 'Поза не обнаружена. Попробуйте лучше осветить тело или полу-боковой ракурс.';
+    feedbackEl.textContent = 'Поза не обнаружена. Встаньте в полный рост, хорошее освещение, полу-боковой ракурс.';
     feedbackEl.style.color = '#ff4757';
   }
 }
@@ -146,8 +208,8 @@ document.getElementById('startButton').addEventListener('click', async () => {
       };
     })
     .catch(err => {
-      feedbackEl.textContent = "Ошибка доступа к камере: " + err.message;
-      console.error(err);
+      feedbackEl.textContent = "Ошибка камеры: " + err.message;
+      feedbackEl.style.color = '#ff4757';
     });
 });
 
@@ -156,6 +218,7 @@ document.getElementById('analyzePhotoButton').addEventListener('click', async ()
   const fileInput = document.getElementById('photoUpload');
   if (!fileInput.files || fileInput.files.length === 0) {
     feedbackEl.textContent = 'Выберите фото!';
+    feedbackEl.style.color = '#ff4757';
     return;
   }
 
