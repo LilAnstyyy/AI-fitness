@@ -3,36 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Фитнес-Тренер</title>
+  <title>Система оценки техники упражнений</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14"></script>
 </head>
 <body>
-  <div class="container">
-    <h1>AI Фитнес-Тренер</h1>
-    <p>Встаньте перед камерой или загрузите фото для анализа техники</p>
-
-    <button id="startButton">Включить камеру</button>
-
-    <div class="upload-container">
-      <p>Или загрузите фото:</p>
-      <input type="file" id="photoUpload" accept="image/*">
-      <button id="analyzePhotoButton">Анализировать фото</button>
+  <div class="poster">
+    <div class="illustration">
+      <!-- Иллюстрации упражнений с зелёными маркерами -->
+      <img src="https://thumbs.dreamstime.com/b/body-diagram-squat-position-highlighting-muscle-groups-joints-key-muscles-body-diagram-squat-position-highlighting-397075974.jpg" alt="Приседания с зелёными маркерами">
+      <img src="https://en.pimg.jp/106/683/291/1/106683291.jpg" alt="Выпады с зелёными маркерами">
+      <img src="https://i.dailymail.co.uk/1s/2025/05/06/12/98083319-14682603-image-a-2_1746530416634.jpg" alt="Планка с зелёными маркерами">
+      <div class="green-circles">
+        <div class="circle"></div>
+        <div class="circle"></div>
+        <div class="circle"></div>
+        <div class="circle"></div>
+      </div>
     </div>
-
-    <div class="video-container">
-      <video id="webcam" autoplay playsinline muted></video>
-      <canvas id="output_canvas"></canvas>
-    </div>
-
-    <div class="info">
-      <h2 id="exerciseName">Определение упражнения...</h2>
-      <p>Повторения: <span id="repCount">0</span></p>
-      <p>Время в планке: <span id="timer">0</span> сек</p>
-      <p id="feedback" class="feedback">Готовы? Начните упражнение или загрузите фото!</p>
+    <div class="text-content">
+      <h1>Система оценки техники<br>упражнений по ключевым<br>точкам тела и расчету углов<br>в суставах</h1>
+      <p class="authors">Выполнили:<br>Студенты группы ШАД-411<br>Кондрученкова Мария<br>Звягинцева Анастасия</p>
+      <div class="app-link">
+        <p>Интерактивное приложение:</p>
+        <a href=ai-fitness-kryto.netlify.app target="_blank">Открыть AI Фитнес-Тренер</a>
+      </div>
     </div>
   </div>
-
-  <script type="module" src="script.js"></script>
 </body>
 </html>
