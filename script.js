@@ -1,30 +1,33 @@
-import {
-  FilesetResolver,
-  PoseLandmarker,
-  DrawingUtils
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import { FilesetResolver, PoseLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-// ===== DOM =====
-const video = document.getElementById("webcam");
-const canvas = document.getElementById("output_canvas");
-const ctx = canvas.getContext("2d");
+const video = document.getElementById('webcam');
+const canvas = document.getElementById('output_canvas');
+const ctx = canvas.getContext('2d');
+const repCountEl = document.getElementById('repCount');
+const timerEl = document.getElementById('timer');
+const feedbackEl = document.getElementById('feedback');
+const exerciseNameEl = document.getElementById('exerciseName');
+const photoPreview = document.getElementById('photoPreview');
+const photoFeedbackEl = document.getElementById('photoFeedback');
+const photoExerciseNameEl = document.getElementById('photoExerciseName');
 
-const repCountEl = document.getElementById("repCount");
-const timerEl = document.getElementById("timer");
-const feedbackEl = document.getElementById("feedback");
-const exerciseNameEl = document.getElementById("exerciseName");
-
-// ===== STATE =====
 let poseLandmarker = null;
-let currentExercise = "none";
-let previousExercise = "none";
-
+let isCameraRunning = false;
+let stream = null;
 let repCount = 0;
-let squatStage = null;
-let lungeStage = null;
 let plankStartTime = 0;
+let currentExercise = 'auto';
+let squatStage = 'up';
+let lungeStage = 'up';
+let lastRepTime = 0;
+const minRepInterval = 800; // мс между повторениями
 
-// ===== INIT =====
+const EXERCISE_NAMES = {
+  squats: 'Приседания',
+  lunges: 'Выпады (болгарские)',
+  plank: 'Планка'
+};
+
 async function initPoseLandmarker() {
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -32,252 +35,275 @@ async function initPoseLandmarker() {
 
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: {
-      modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       delegate: "GPU"
     },
     runningMode: "VIDEO",
     numPoses: 1
   });
 
-  feedbackEl.textContent = "Модель загружена. Начните тренировку или загрузите фото.";
-  feedbackEl.style.color = "#ffd93d";
+  feedbackEl.textContent = "Готово! Включите камеру или загрузите фото.";
 }
 
-// ===== UTILS =====
 function calculateAngle(a, b, c) {
-  const radians =
-    Math.atan2(c.y - b.y, c.x - b.x) -
-    Math.atan2(a.y - b.y, a.x - b.x);
-  let angle = Math.abs((radians * 180) / Math.PI);
+  const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+  let angle = Math.abs(radians * 180.0 / Math.PI);
   if (angle > 180) angle = 360 - angle;
   return angle;
 }
 
 function isBodyHorizontal(landmarks) {
-  const shoulderY = (landmarks[11].y + landmarks[12].y) / 2;
-  const hipY = (landmarks[23].y + landmarks[24].y) / 2;
-  return Math.abs(shoulderY - hipY) < 0.12;
+  const lShoulder = landmarks[11];
+  const rShoulder = landmarks[12];
+  const lHip = landmarks[23];
+  const rHip = landmarks[24];
+  const shoulderY = (lShoulder.y + rShoulder.y) / 2;
+  const hipY = (lHip.y + rHip.y) / 2;
+  return Math.abs(shoulderY - hipY) < 0.15;
 }
 
-// ===== EXERCISE DETECTION =====
 function detectExercise(landmarks) {
   const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
   const rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
   const lShoulder = landmarks[11];
 
-  const leftKnee = calculateAngle(lHip, lKnee, lAnkle);
-  const rightKnee = calculateAngle(rHip, rKnee, rAnkle);
-  const avgKnee = (leftKnee + rightKnee) / 2;
+  const leftKneeAngle = calculateAngle(lHip, lKnee, lAnkle);
+  const rightKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
+  const avgKneeAngle = (leftKneeAngle + rightKneeAngle) / 2;
+  const kneeDiff = Math.abs(leftKneeAngle - rightKneeAngle);
+  const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
 
-  const hipAngle = calculateAngle(lShoulder, lHip, lKnee);
-
-  // Планка
-  if (avgKnee > 160 && isBodyHorizontal(landmarks)) {
-    return "plank";
+  if (avgKneeAngle < 150) {
+    if (kneeDiff > 40) return 'lunges';
+    return 'squats';
   }
 
-  // Присед
-  if (avgKnee < 130 && hipAngle < 140) {
-    return "squats";
+  if (avgKneeAngle > 160 && bodyLineAngle > 160 && isBodyHorizontal(landmarks)) {
+    return 'plank';
   }
 
-  // Выпады
-  if (
-    (leftKnee < 120 && rightKnee > 150) ||
-    (rightKnee < 120 && leftKnee > 150)
-  ) {
-    return "lunges";
-  }
-
-  return "none";
+  return 'none';
 }
 
-// ===== FEEDBACK + COUNTERS =====
-function giveFeedback(exercise, landmarks) {
-  feedbackEl.style.color = "#ffd93d";
-
-  if (exercise === "none") {
-    return "Встаньте в стартовую позицию и начните упражнение";
+function giveVideoFeedback(exercise, landmarks) {
+  if (exercise === 'none') {
+    feedbackEl.style.color = '#ffcc00';
+    return 'Стартовая позиция. Начните упражнение!';
   }
 
   const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
   const rHip = landmarks[24], rKnee = landmarks[26];
   const lShoulder = landmarks[11];
 
-  // ===== SQUATS =====
-  if (exercise === "squats") {
-    const kneeAngle =
-      (calculateAngle(lHip, lKnee, lAnkle) +
-        calculateAngle(rHip, rKnee, lAnkle)) /
-      2;
+  let msg = '';
+  let color = '#ff4757';
 
-    if (kneeAngle < 95 && squatStage !== "down") {
-      squatStage = "down";
-    }
+  if (exercise === 'squats') {
+    const avgKneeAngle = (calculateAngle(lHip, lKnee, lAnkle) + calculateAngle(rHip, rKnee, rAnkle)) / 2;
+    const hipAngle = calculateAngle(lShoulder, lHip, lKnee);
 
-    if (kneeAngle > 160 && squatStage === "down") {
-      squatStage = "up";
-      repCount++;
-      repCountEl.textContent = repCount;
-    }
-
-    if (kneeAngle < 100) {
-      feedbackEl.style.color = "#00ff00";
-      return "Отличный глубокий присед 🔥";
+    if (avgKneeAngle < 100 && hipAngle > 140) {
+      msg = 'Отлично! Глубокий присед, спина прямая 🔥';
+      color = '#00ff00';
+    } else if (avgKneeAngle < 100) {
+      msg = 'Глубоко, но спина наклоняется — держите грудь вверх!';
     } else {
-      feedbackEl.style.color = "#ff4757";
-      return "Приседайте глубже (колени ~90°)";
-    }
-  }
-
-  // ===== LUNGES =====
-  if (exercise === "lunges") {
-    const left = calculateAngle(lHip, lKnee, lAnkle);
-    const right = calculateAngle(rHip, rKnee, lAnkle);
-    const front = Math.min(left, right);
-
-    if (front < 90 && lungeStage !== "down") {
-      lungeStage = "down";
+      msg = 'Приседайте глубже (колени под ~90°)';
     }
 
-    if (front > 150 && lungeStage === "down") {
-      lungeStage = "up";
-      repCount++;
-      repCountEl.textContent = repCount;
+    if (avgKneeAngle < 95 && squatStage === 'up') squatStage = 'down';
+    if (avgKneeAngle > 155 && squatStage === 'down') {
+      if (Date.now() - lastRepTime > minRepInterval) {
+        squatStage = 'up';
+        repCount++;
+        repCountEl.textContent = repCount;
+        lastRepTime = Date.now();
+        msg = 'Супер! +1 повторение 💪';
+        color = '#00ff00';
+      }
     }
 
-    if (front > 80 && front < 100) {
-      feedbackEl.style.color = "#00ff00";
-      return "Идеальный выпад 👌";
+  } else if (exercise === 'lunges') {
+    const frontAngle = Math.min(calculateAngle(lHip, lKnee, lAnkle), calculateAngle(rHip, rKnee, rAnkle));
+
+    if (frontAngle > 80 && frontAngle < 100) {
+      msg = 'Идеально! Переднее колено под 90° 👌';
+      color = '#00ff00';
+    } else if (frontAngle < 80) {
+      msg = 'Согните переднюю ногу сильнее';
     } else {
-      feedbackEl.style.color = "#ff4757";
-      return "Переднее колено должно быть ~90°";
+      msg = 'Не переразгибайте переднее колено';
     }
-  }
 
-  // ===== PLANK =====
-  if (exercise === "plank") {
+    if (frontAngle < 85 && lungeStage === 'up') lungeStage = 'down';
+    if (frontAngle > 140 && lungeStage === 'down') {
+      if (Date.now() - lastRepTime > minRepInterval) {
+        lungeStage = 'up';
+        repCount++;
+        repCountEl.textContent = repCount;
+        lastRepTime = Date.now();
+      }
+    }
+
+  } else if (exercise === 'plank') {
     const lineAngle = calculateAngle(lShoulder, lHip, lAnkle);
-
     if (lineAngle > 170) {
-      if (!plankStartTime) plankStartTime = Date.now();
-      timerEl.textContent = Math.floor(
-        (Date.now() - plankStartTime) / 1000
-      );
-      feedbackEl.style.color = "#00ff00";
-      return "Тело ровное, держите планку 💪";
+      if (plankStartTime === 0) plankStartTime = Date.now();
+      const seconds = Math.floor((Date.now() - plankStartTime) / 1000);
+      timerEl.textContent = seconds;
+      msg = 'Держите! Тело прямое как доска 💪';
+      color = '#00ff00';
     } else {
+      msg = 'Провисает спина или таз — выпрямитесь!';
       plankStartTime = 0;
-      timerEl.textContent = "0";
-      feedbackEl.style.color = "#ff4757";
-      return "Выпрямите спину и таз";
+      timerEl.textContent = '0';
     }
   }
+
+  feedbackEl.style.color = color;
+  return msg;
 }
 
-// ===== PROCESS RESULTS =====
-function processResults(results, source) {
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+function processFrame(results) {
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  if (!results.landmarks || results.landmarks.length === 0) {
-    currentExercise = "none";
-    exerciseNameEl.textContent = "Нет позы";
-    feedbackEl.textContent = "Поза не обнаружена";
-    feedbackEl.style.color = "#ff4757";
-    return;
+  if (results.landmarks && results.landmarks.length > 0) {
+    const landmarks = results.landmarks[0];
+    const drawingUtils = new DrawingUtils(ctx);
+    drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+    drawingUtils.drawLandmarks(landmarks, { color: '#FF0000', radius: 6 });
+
+    let detected = currentExercise === 'auto' ? detectExercise(landmarks) : currentExercise;
+    if (detected === 'none' && currentExercise !== 'auto') detected = currentExercise;
+
+    exerciseNameEl.textContent = EXERCISE_NAMES[detected] || 'Не определено';
+    feedbackEl.textContent = giveVideoFeedback(detected, landmarks);
+  } else {
+    feedbackEl.textContent = 'Поза не обнаружена. Встаньте полностью в кадр.';
+    feedbackEl.style.color = '#ff4757';
   }
-
-  const landmarks = results.landmarks[0];
-  const drawingUtils = new DrawingUtils(ctx);
-
-  drawingUtils.drawConnectors(
-    landmarks,
-    PoseLandmarker.POSE_CONNECTIONS,
-    { color: "#00ff00", lineWidth: 4 }
-  );
-  drawingUtils.drawLandmarks(landmarks, {
-    color: "#ff0000",
-    radius: 5
-  });
-
-  currentExercise = detectExercise(landmarks);
-
-  if (currentExercise !== previousExercise) {
-    previousExercise = currentExercise;
-    repCount = 0;
-    repCountEl.textContent = "0";
-    timerEl.textContent = "0";
-    squatStage = null;
-    lungeStage = null;
-    plankStartTime = 0;
-
-    const names = {
-      squats: "Приседания",
-      lunges: "Выпады",
-      plank: "Планка"
-    };
-    exerciseNameEl.textContent = names[currentExercise] || "Старт";
-  }
-
-  feedbackEl.textContent = giveFeedback(currentExercise, landmarks);
 }
 
-// ===== VIDEO LOOP =====
-function runVideoDetection() {
-  if (!poseLandmarker) return;
+function runDetection() {
+  if (!isCameraRunning || !poseLandmarker) return;
   const results = poseLandmarker.detectForVideo(video, performance.now());
-  processResults(results, video);
-  requestAnimationFrame(runVideoDetection);
+  processFrame(results);
+  requestAnimationFrame(runDetection);
 }
 
-// ===== CAMERA =====
-document.getElementById("startButton").addEventListener("click", async () => {
+// Камера
+document.getElementById('startButton').addEventListener('click', async () => {
+  if (isCameraRunning) return;
+
   if (!poseLandmarker) await initPoseLandmarker();
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user" }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      video.play();
+      isCameraRunning = true;
+      document.getElementById('startButton').disabled = true;
+      document.getElementById('stopButton').disabled = false;
+      runDetection();
+    };
+  } catch (err) {
+    feedbackEl.textContent = "Ошибка камеры: " + err.message;
+  }
+});
+
+document.getElementById('stopButton').addEventListener('click', () => {
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+  isCameraRunning = false;
+  document.getElementById('startButton').disabled = false;
+  document.getElementById('stopButton').disabled = true;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  feedbackEl.textContent = "Камера выключена";
+});
+
+document.getElementById('resetButton').addEventListener('click', () => {
+  repCount = 0;
+  plankStartTime = 0;
+  squatStage = 'up';
+  lungeStage = 'up';
+  lastRepTime = 0;
+  repCountEl.textContent = '0';
+  timerEl.textContent = '0';
+});
+
+// Выбор упражнения
+document.querySelectorAll('.exercise-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.exercise-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentExercise = btn.dataset.exercise;
   });
+});
 
-  video.srcObject = stream;
-  video.play();
+// Фото
+const photoUpload = document.getElementById('photoUpload');
+const photoUploadArea = document.getElementById('photoUploadArea');
+const analyzeBtn = document.getElementById('analyzePhotoButton');
+const clearBtn = document.getElementById('clearPhotoButton');
 
-  video.onloadedmetadata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    runVideoDetection();
+photoUploadArea.addEventListener('click', () => photoUpload.click());
+
+photoUpload.addEventListener('change', () => {
+  if (photoUpload.files[0]) {
+    photoPreview.src = URL.createObjectURL(photoUpload.files[0]);
+    photoPreview.style.display = 'block';
+    analyzeBtn.disabled = false;
+    clearBtn.disabled = false;
+  }
+});
+
+analyzeBtn.addEventListener('click', async () => {
+  if (!poseLandmarker) await initPoseLandmarker();
+
+  const img = new Image();
+  img.src = photoPreview.src;
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+
+    const mpImage = new mp.Image(img, mp.ImageFormat.SRGB);
+    const results = poseLandmarker.detect(mpImage);
+
+    if (results.landmarks && results.landmarks.length > 0) {
+      const landmarks = results.landmarks[0];
+      const drawingUtils = new DrawingUtils(ctx);
+      drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+      drawingUtils.drawLandmarks(landmarks, { color: '#FF0000', radius: 6 });
+
+      const detected = currentExercise === 'auto' ? detectExercise(landmarks) : currentExercise;
+      photoExerciseNameEl.textContent = EXERCISE_NAMES[detected] || 'Не определено';
+      photoFeedbackEl.textContent = giveVideoFeedback(detected, landmarks); // Используем ту же функцию
+      photoFeedbackEl.style.color = feedbackEl.style.color;
+    } else {
+      photoFeedbackEl.textContent = 'Поза не обнаружена на фото. Попробуйте другой ракурс.';
+    }
   };
 });
 
-// ===== PHOTO =====
-document
-  .getElementById("analyzePhotoButton")
-  .addEventListener("click", async () => {
-    const input = document.getElementById("photoUpload");
-    if (!input.files.length) {
-      feedbackEl.textContent = "Выберите фото";
-      feedbackEl.style.color = "#ff4757";
-      return;
-    }
+clearBtn.addEventListener('click', () => {
+  photoPreview.src = '';
+  photoPreview.style.display = 'none';
+  photoUpload.value = '';
+  photoExerciseNameEl.textContent = '—';
+  photoFeedbackEl.textContent = 'Загрузите фото для анализа';
+  analyzeBtn.disabled = true;
+  clearBtn.disabled = true;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+});
 
-    if (!poseLandmarker) await initPoseLandmarker();
-
-    const img = new Image();
-    img.src = URL.createObjectURL(input.files[0]);
-
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-      const results = poseLandmarker.detect(imageData);
-      processResults(results, img);
-    };
-  });
+// Запуск при загрузке
+document.addEventListener('DOMContentLoaded', () => {
+  feedbackEl.textContent = "Загрузка модели...";
+  initPoseLandmarker();
+});
