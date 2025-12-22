@@ -28,7 +28,12 @@ const EXERCISE_NAMES = {
   plank: 'Планка'
 };
 
-async function initPoseLandmarker() {
+async function loadModel() {
+  if (poseLandmarker) return;
+
+  feedbackEl.textContent = "Загрузка модели ИИ... (один раз)";
+  photoFeedbackEl.textContent = "Загрузка модели ИИ...";
+
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
@@ -45,7 +50,8 @@ async function initPoseLandmarker() {
     minTrackingConfidence: 0.6
   });
 
-  feedbackEl.textContent = "Модель загружена. Включите камеру или загрузите фото.";
+  feedbackEl.textContent = "Модель загружена! Готово к работе.";
+  photoFeedbackEl.textContent = "Модель загружена. Загрузите фото.";
 }
 
 function calculateAngle(a, b, c) {
@@ -62,13 +68,13 @@ function isBodyHorizontal(landmarks) {
   const rHip = landmarks[24];
   const shoulderY = (lShoulder.y + rShoulder.y) / 2;
   const hipY = (lHip.y + rHip.y) / 2;
-  return Math.abs(shoulderY - hipY) < 0.15 && shoulderY > 0.2 && hipY > 0.2;
+  return Math.abs(shoulderY - hipY) < 0.15;
 }
 
 function detectExercise(landmarks) {
-  // Проверка видимости ключевых точек ног
-  const legVisibility = [landmarks[23], landmarks[24], landmarks[25], landmarks[26], landmarks[27], landmarks[28]]
-    .reduce((sum, lm) => sum + (lm.visibility || 0), 0) / 6;
+  // Проверка видимости ног
+  const legPoints = [23, 24, 25, 26, 27, 28];
+  const legVisibility = legPoints.reduce((sum, i) => sum + (landmarks[i]?.visibility || 0), 0) / legPoints.length;
   if (legVisibility < 0.5) return 'none';
 
   const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
@@ -81,13 +87,11 @@ function detectExercise(landmarks) {
   const kneeDiff = Math.abs(leftKneeAngle - rightKneeAngle);
   const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
 
-  // Приседания или выпады — только если колени согнуты и ноги видны
-  if (avgKneeAngle < 150 && legVisibility > 0.7) {
+  if (avgKneeAngle < 150) {
     if (kneeDiff > 40) return 'lunges';
     return 'squats';
   }
 
-  // Планка — только если тело горизонтальное и ключевые точки видны
   if (avgKneeAngle > 160 && bodyLineAngle > 160 && isBodyHorizontal(landmarks)) {
     return 'plank';
   }
@@ -174,8 +178,8 @@ function giveFeedback(exercise, landmarks) {
   return msg;
 }
 
-function processFrame(results) {
-  // Ключевой фикс: всегда рисуем текущее видео
+function processVideoFrame(results) {
+  // Фикс: всегда показываем текущее видео
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
   if (results.landmarks && results.landmarks.length > 0) {
@@ -195,21 +199,23 @@ function processFrame(results) {
   }
 }
 
-function runDetection() {
+function runVideoDetection() {
   if (!isCameraRunning || !poseLandmarker) return;
   const results = poseLandmarker.detectForVideo(video, performance.now());
-  processFrame(results);
-  requestAnimationFrame(runDetection);
+  processVideoFrame(results);
+  requestAnimationFrame(runVideoDetection);
 }
 
 // Камера
 document.getElementById('startButton').addEventListener('click', async () => {
   if (isCameraRunning) return;
 
-  if (!poseLandmarker) await initPoseLandmarker();
+  await loadModel();
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" }  // Фронтальная камера
+    });
     video.srcObject = stream;
     video.onloadedmetadata = () => {
       canvas.width = video.videoWidth;
@@ -218,8 +224,8 @@ document.getElementById('startButton').addEventListener('click', async () => {
       isCameraRunning = true;
       document.getElementById('startButton').disabled = true;
       document.getElementById('stopButton').disabled = false;
-      feedbackEl.textContent = "Камера включена. Начните упражнение!";
-      runDetection();
+      feedbackEl.textContent = "Камера включена. Вы видите себя!";
+      runVideoDetection();
     };
   } catch (err) {
     feedbackEl.textContent = "Ошибка камеры: " + err.message;
@@ -272,14 +278,12 @@ photoUpload.addEventListener('change', () => {
     photoPreview.style.display = 'block';
     analyzeBtn.disabled = false;
     clearBtn.disabled = false;
+    photoFeedbackEl.textContent = "Фото загружено. Нажмите 'Анализировать'";
   }
 });
 
 analyzeBtn.addEventListener('click', async () => {
-  if (!photoPreview.src || !poseLandmarker) {
-    photoFeedbackEl.textContent = "Загрузите фото и подождите загрузки модели.";
-    return;
-  }
+  await loadModel();
 
   const img = new Image();
   img.src = photoPreview.src;
@@ -302,7 +306,7 @@ analyzeBtn.addEventListener('click', async () => {
       photoFeedbackEl.textContent = giveFeedback(detected, landmarks);
       photoFeedbackEl.style.color = feedbackEl.style.color;
     } else {
-      photoFeedbackEl.textContent = 'Поза не обнаружена на фото. Попробуйте фронтальный или полу-боковой ракурс.';
+      photoFeedbackEl.textContent = 'Поза не обнаружена. Попробуйте фото с полным видом тела.';
       photoFeedbackEl.style.color = '#ff4757';
     }
   };
@@ -317,10 +321,4 @@ clearBtn.addEventListener('click', () => {
   analyzeBtn.disabled = true;
   clearBtn.disabled = true;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-});
-
-// Инициализация
-document.addEventListener('DOMContentLoaded', () => {
-  feedbackEl.textContent = "Загрузка модели ИИ...";
-  initPoseLandmarker();
 });
