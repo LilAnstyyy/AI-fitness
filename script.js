@@ -1,4 +1,4 @@
-import { FilesetResolver, PoseLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+=import { FilesetResolver, PoseLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output_canvas');
@@ -19,9 +19,10 @@ let plankStartTime = 0;
 let currentExercise = 'auto';
 let squatStage = 'up';
 let lungeStage = 'up';
+let pushupStage = 'up';
 let lastRepTime = 0;
 const minRepInterval = 800;
-let isDrawingEnabled = true; // Флаг для отрисовки скелета
+let isDrawingEnabled = true;
 
 const EXERCISE_NAMES = {
   squats: 'Приседания',
@@ -31,20 +32,21 @@ const EXERCISE_NAMES = {
   none: 'Стойка'
 };
 
-// Добавляем объект mp для работы с изображениями
-const mp = {
-  Image: class {
-    constructor(element, format) {
-      this.image = element;
-      this.format = format;
+// Создаем кнопку для переключения скелета, если её нет в HTML
+function createToggleSkeletonButton() {
+  if (!document.getElementById('toggleSkeleton')) {
+    const controlsDiv = document.querySelector('.controls');
+    if (controlsDiv) {
+      const toggleBtn = document.createElement('button');
+      toggleBtn.id = 'toggleSkeleton';
+      toggleBtn.className = 'btn btn-secondary';
+      toggleBtn.textContent = 'Скрыть скелет';
+      toggleBtn.disabled = true;
+      controlsDiv.appendChild(toggleBtn);
     }
-  },
-  ImageFormat: {
-    SRGB: 'SRGB'
   }
-};
+}
 
-// Расширенная функция для получения конкретных советов
 function getDetailedAdvice(exercise, landmarks) {
   const advice = [];
   
@@ -108,6 +110,27 @@ function getDetailedAdvice(exercise, landmarks) {
     if (advice.length === 0) {
       advice.push("• Отличная планка! Тело прямое как струна");
     }
+    
+  } else if (exercise === 'pushups') {
+    const lElbow = landmarks[13], rElbow = landmarks[14];
+    const lWrist = landmarks[15], rWrist = landmarks[16];
+    const leftElbowAngle = calculateAngle(landmarks[11], lElbow, lWrist);
+    const rightElbowAngle = calculateAngle(landmarks[12], rElbow, rWrist);
+    const avgElbowAngle = (leftElbowAngle + rightElbowAngle) / 2;
+    
+    if (avgElbowAngle > 130) {
+      advice.push("• Опуститесь глубже, локти должны сгибаться до 90°");
+    }
+    if (Math.abs(leftElbowAngle - rightElbowAngle) > 20) {
+      advice.push("• Держите локти симметрично");
+    }
+    const bodyLineAngle = calculateAngle(landmarks[11], landmarks[23], landmarks[27]);
+    if (bodyLineAngle < 170) {
+      advice.push("• Держите тело прямой линией, не прогибайтесь в пояснице");
+    }
+    if (advice.length === 0) {
+      advice.push("• Отличная техника отжиманий!");
+    }
   }
   
   return advice.join('\n');
@@ -153,12 +176,12 @@ function isBodyHorizontal(landmarks) {
   const rHip = landmarks[24];
   const shoulderY = (lShoulder.y + rShoulder.y) / 2;
   const hipY = (lHip.y + rHip.y) / 2;
-  return Math.abs(shoulderY - hipY) < 0.1; // Более строгий порог
+  return Math.abs(shoulderY - hipY) < 0.1;
 }
 
 function detectExercise(landmarks) {
   // Проверка видимости ключевых точек
-  const keyPoints = [11, 12, 23, 24, 25, 26]; // Плечи, бедра, колени
+  const keyPoints = [11, 12, 23, 24, 25, 26];
   const avgVisibility = keyPoints.reduce((sum, i) => sum + (landmarks[i]?.visibility || 0), 0) / keyPoints.length;
   if (avgVisibility < 0.3) return 'none';
 
@@ -166,6 +189,7 @@ function detectExercise(landmarks) {
   const rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
   const lShoulder = landmarks[11], rShoulder = landmarks[12];
   const lElbow = landmarks[13], rElbow = landmarks[14];
+  const lWrist = landmarks[15], rWrist = landmarks[16];
 
   const leftKneeAngle = calculateAngle(lHip, lKnee, lAnkle);
   const rightKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
@@ -173,12 +197,9 @@ function detectExercise(landmarks) {
   const kneeDiff = Math.abs(leftKneeAngle - rightKneeAngle);
   const bodyLineAngle = calculateAngle(lShoulder, lHip, lAnkle);
   
-  // Проверка на вертикальную стойку
-  const isStanding = avgKneeAngle > 160 && bodyLineAngle > 170;
-  
   // Проверка на отжимания
-  const leftElbowAngle = calculateAngle(lShoulder, lElbow, landmarks[15]);
-  const rightElbowAngle = calculateAngle(rShoulder, rElbow, landmarks[16]);
+  const leftElbowAngle = calculateAngle(lShoulder, lElbow, lWrist);
+  const rightElbowAngle = calculateAngle(rShoulder, rElbow, rWrist);
   const avgElbowAngle = (leftElbowAngle + rightElbowAngle) / 2;
   const isPushupPosition = avgElbowAngle < 150 && isBodyHorizontal(landmarks);
 
@@ -189,11 +210,9 @@ function detectExercise(landmarks) {
     return 'squats';
   } else if (isBodyHorizontal(landmarks) && bodyLineAngle > 175 && avgKneeAngle > 160) {
     return 'plank';
-  } else if (isStanding) {
-    return 'none'; // Вертикальная стойка
   }
 
-  return 'none';
+  return 'none'; // Вертикальная стойка или неопределено
 }
 
 function giveFeedback(exercise, landmarks) {
@@ -205,15 +224,15 @@ function giveFeedback(exercise, landmarks) {
     };
   }
 
-  const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
-  const rHip = landmarks[24], rKnee = landmarks[26];
-  const lShoulder = landmarks[11];
-
   let message = '';
   let color = '#ff4757';
   let advice = '';
 
   if (exercise === 'squats') {
+    const lHip = landmarks[23], lKnee = landmarks[25], lAnkle = landmarks[27];
+    const rHip = landmarks[24], rKnee = landmarks[26], rAnkle = landmarks[28];
+    const lShoulder = landmarks[11];
+    
     const avgKneeAngle = (calculateAngle(lHip, lKnee, lAnkle) + calculateAngle(rHip, rKnee, rAnkle)) / 2;
     const hipAngle = calculateAngle(lShoulder, lHip, lKnee);
 
@@ -248,8 +267,8 @@ function giveFeedback(exercise, landmarks) {
     advice = getDetailedAdvice('squats', landmarks);
 
   } else if (exercise === 'lunges') {
-    const leftAngle = calculateAngle(lHip, lKnee, lAnkle);
-    const rightAngle = calculateAngle(rHip, rKnee, rAnkle);
+    const leftAngle = calculateAngle(landmarks[23], landmarks[25], landmarks[27]);
+    const rightAngle = calculateAngle(landmarks[24], landmarks[26], landmarks[28]);
     const frontAngle = Math.min(leftAngle, rightAngle);
 
     if (frontAngle > 85 && frontAngle < 95) {
@@ -280,7 +299,7 @@ function giveFeedback(exercise, landmarks) {
     advice = getDetailedAdvice('lunges', landmarks);
 
   } else if (exercise === 'plank') {
-    const lineAngle = calculateAngle(lShoulder, lHip, lAnkle);
+    const lineAngle = calculateAngle(landmarks[11], landmarks[23], landmarks[27]);
     if (lineAngle > 175) {
       if (plankStartTime === 0) {
         plankStartTime = Date.now();
@@ -304,7 +323,7 @@ function giveFeedback(exercise, landmarks) {
   } else if (exercise === 'pushups') {
     const lElbow = landmarks[13], rElbow = landmarks[14];
     const lWrist = landmarks[15], rWrist = landmarks[16];
-    const avgElbowAngle = (calculateAngle(lShoulder, lElbow, lWrist) + 
+    const avgElbowAngle = (calculateAngle(landmarks[11], lElbow, lWrist) + 
                           calculateAngle(landmarks[12], rElbow, rWrist)) / 2;
     
     if (avgElbowAngle < 100) {
@@ -316,6 +335,25 @@ function giveFeedback(exercise, landmarks) {
     } else {
       message = 'Начните отжимание';
     }
+    
+    // Подсчет повторений для отжиманий
+    if (avgElbowAngle < 100 && pushupStage === 'up') {
+      pushupStage = 'down';
+      message = 'Опускаемся...';
+      color = '#ffcc00';
+    }
+    if (avgElbowAngle > 150 && pushupStage === 'down') {
+      if (Date.now() - lastRepTime > minRepInterval) {
+        pushupStage = 'up';
+        repCount++;
+        repCountEl.textContent = repCount;
+        lastRepTime = Date.now();
+        message = 'Отлично! +1 отжимание 💪';
+        color = '#00ff00';
+      }
+    }
+    
+    advice = getDetailedAdvice('pushups', landmarks);
   }
 
   return { message, color, advice };
@@ -334,13 +372,11 @@ function processVideoFrame(results) {
       const drawingUtils = new DrawingUtils(ctx);
       drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, { 
         color: '#00FF00', 
-        lineWidth: 3,
-        visibilityMin: 0.3 
+        lineWidth: 3
       });
       drawingUtils.drawLandmarks(landmarks, { 
         color: '#FF0000', 
-        radius: 4,
-        visibilityMin: 0.3 
+        radius: 4
       });
     }
 
@@ -349,13 +385,15 @@ function processVideoFrame(results) {
 
     exerciseNameEl.textContent = EXERCISE_NAMES[detected] || 'Определение...';
     const feedback = giveFeedback(detected, landmarks);
-    feedbackEl.textContent = feedback.message;
+    
+    // Обновляем текст обратной связи
+    if (feedback.advice) {
+      feedbackEl.innerHTML = `<strong>${feedback.message}</strong><br><small style="color: #aaa; white-space: pre-line;">${feedback.advice}</small>`;
+    } else {
+      feedbackEl.textContent = feedback.message;
+    }
     feedbackEl.style.color = feedback.color;
     
-    // Показываем подробные советы при необходимости
-    if (feedback.advice) {
-      feedbackEl.innerHTML = `${feedback.message}<br><small style="color: #aaa;">${feedback.advice}</small>`;
-    }
   } else {
     feedbackEl.textContent = 'Поза не обнаружена. Убедитесь, что:\n• Все тело в кадре\n• Хорошее освещение\n• Вы стоите боком к камере';
     feedbackEl.style.color = '#ff4757';
@@ -381,15 +419,15 @@ document.getElementById('startButton').addEventListener('click', async () => {
   if (isCameraRunning) return;
 
   await loadModel();
+  createToggleSkeletonButton(); // Создаем кнопку если её нет
 
   try {
-    // Запрашиваем камеру с оптимальными параметрами
+    // Запрашиваем камеру
     stream = await navigator.mediaDevices.getUserMedia({
       video: { 
         facingMode: "user",
         width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30 }
+        height: { ideal: 720 }
       },
       audio: false
     });
@@ -410,13 +448,19 @@ document.getElementById('startButton').addEventListener('click', async () => {
     isCameraRunning = true;
     document.getElementById('startButton').disabled = true;
     document.getElementById('stopButton').disabled = false;
-    document.getElementById('toggleSkeleton').disabled = false;
+    
+    // Активируем кнопку переключения скелета если она есть
+    const toggleSkeletonBtn = document.getElementById('toggleSkeleton');
+    if (toggleSkeletonBtn) {
+      toggleSkeletonBtn.disabled = false;
+    }
     
     // Сбрасываем счетчики при запуске камеры
     repCount = 0;
     plankStartTime = 0;
     squatStage = 'up';
     lungeStage = 'up';
+    pushupStage = 'up';
     lastRepTime = 0;
     repCountEl.textContent = '0';
     timerEl.textContent = '0';
@@ -428,7 +472,7 @@ document.getElementById('startButton').addEventListener('click', async () => {
     
   } catch (err) {
     console.error('Camera error:', err);
-    feedbackEl.textContent = "Ошибка камеры: " + err.message;
+    feedbackEl.textContent = "Ошибка камеры: " + (err.message || "Не удалось получить доступ к камере");
     feedbackEl.style.color = '#ff4757';
   }
 });
@@ -441,7 +485,12 @@ document.getElementById('stopButton').addEventListener('click', () => {
   isCameraRunning = false;
   document.getElementById('startButton').disabled = false;
   document.getElementById('stopButton').disabled = true;
-  document.getElementById('toggleSkeleton').disabled = true;
+  
+  // Деактивируем кнопку переключения скелета если она есть
+  const toggleSkeletonBtn = document.getElementById('toggleSkeleton');
+  if (toggleSkeletonBtn) {
+    toggleSkeletonBtn.disabled = true;
+  }
   
   // Очищаем canvas и показываем сообщение
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -450,7 +499,8 @@ document.getElementById('stopButton').addEventListener('click', () => {
   ctx.fillStyle = '#fff';
   ctx.font = '20px Arial';
   ctx.textAlign = 'center';
-  ctx.fillText('Камера выключена', canvas.width/2, canvas.height/2);
+  ctx.fillText('Камера выключена', canvas.width/2, canvas.height/2 - 20);
+  ctx.fillText('Нажмите "Включить камеру"', canvas.width/2, canvas.height/2 + 20);
   
   feedbackEl.textContent = "Камера выключена. Для продолжения включите камеру.";
   feedbackEl.style.color = '#ffcc00';
@@ -461,6 +511,7 @@ document.getElementById('resetButton').addEventListener('click', () => {
   plankStartTime = 0;
   squatStage = 'up';
   lungeStage = 'up';
+  pushupStage = 'up';
   lastRepTime = 0;
   repCountEl.textContent = '0';
   timerEl.textContent = '0';
@@ -468,12 +519,23 @@ document.getElementById('resetButton').addEventListener('click', () => {
   feedbackEl.style.color = '#ffcc00';
 });
 
-// Кнопка включения/выключения скелета
-document.getElementById('toggleSkeleton').addEventListener('click', function() {
-  isDrawingEnabled = !isDrawingEnabled;
-  this.textContent = isDrawingEnabled ? 'Скрыть скелет' : 'Показать скелет';
-  this.classList.toggle('btn-secondary');
-  this.classList.toggle('btn-primary');
+// Кнопка включения/выключения скелета (обработчик добавляется динамически)
+document.addEventListener('DOMContentLoaded', function() {
+  const toggleSkeletonBtn = document.getElementById('toggleSkeleton');
+  if (!toggleSkeletonBtn) {
+    // Создаем кнопку при загрузке страницы
+    createToggleSkeletonButton();
+  }
+  
+  // Добавляем обработчик для кнопки переключения скелета
+  document.addEventListener('click', function(e) {
+    if (e.target && e.target.id === 'toggleSkeleton') {
+      isDrawingEnabled = !isDrawingEnabled;
+      e.target.textContent = isDrawingEnabled ? 'Скрыть скелет' : 'Показать скелет';
+      e.target.classList.toggle('btn-secondary');
+      e.target.classList.toggle('btn-primary');
+    }
+  });
 });
 
 // Выбор упражнения
@@ -488,6 +550,7 @@ document.querySelectorAll('.exercise-btn').forEach(btn => {
     plankStartTime = 0;
     squatStage = 'up';
     lungeStage = 'up';
+    pushupStage = 'up';
     lastRepTime = 0;
     repCountEl.textContent = '0';
     timerEl.textContent = '0';
@@ -540,7 +603,7 @@ function handlePhotoSelection() {
     }
     
     // Проверка размера файла
-    if (file.size > 5 * 1024 * 1024) { // 5MB
+    if (file.size > 5 * 1024 * 1024) {
       photoFeedbackEl.textContent = "Файл слишком большой (максимум 5MB)";
       photoFeedbackEl.style.color = '#ff4757';
       return;
@@ -569,6 +632,7 @@ analyzeBtn.addEventListener('click', async () => {
   }
   
   analyzeBtn.disabled = true;
+  const originalText = analyzeBtn.textContent;
   analyzeBtn.textContent = 'Анализ...';
   photoFeedbackEl.textContent = "Анализ позы...";
   photoFeedbackEl.style.color = '#ffcc00';
@@ -614,7 +678,7 @@ analyzeBtn.addEventListener('click', async () => {
         photoExerciseNameEl.textContent = exerciseName;
         
         const feedback = giveFeedback(detected, landmarks);
-        photoFeedbackEl.innerHTML = `<strong>${feedback.message}</strong><br>${feedback.advice || ''}`;
+        photoFeedbackEl.innerHTML = `<strong>${feedback.message}</strong><br><small style="white-space: pre-line;">${feedback.advice || ''}</small>`;
         photoFeedbackEl.style.color = feedback.color;
         
       } else {
@@ -629,7 +693,7 @@ analyzeBtn.addEventListener('click', async () => {
       photoFeedbackEl.style.color = '#ff4757';
     } finally {
       analyzeBtn.disabled = false;
-      analyzeBtn.textContent = 'Анализировать фото';
+      analyzeBtn.textContent = originalText;
     }
   };
   
@@ -637,7 +701,7 @@ analyzeBtn.addEventListener('click', async () => {
     photoFeedbackEl.textContent = 'Ошибка загрузки фото';
     photoFeedbackEl.style.color = '#ff4757';
     analyzeBtn.disabled = false;
-    analyzeBtn.textContent = 'Анализировать фото';
+    analyzeBtn.textContent = originalText;
   };
 });
 
@@ -653,6 +717,17 @@ clearBtn.addEventListener('click', () => {
   
   // Очищаем canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Если камера выключена, показываем сообщение
+  if (!isCameraRunning) {
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Загрузите фото для анализа', canvas.width/2, canvas.height/2 - 20);
+    ctx.fillText('или включите камеру', canvas.width/2, canvas.height/2 + 20);
+  }
 });
 
 // Инициализация при загрузке страницы
@@ -672,4 +747,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   feedbackEl.textContent = "Добро пожаловать! Включите камеру или загрузите фото для анализа упражнений.";
   feedbackEl.style.color = '#ffcc00';
+  
+  // Создаем кнопку переключения скелета
+  createToggleSkeletonButton();
 });
