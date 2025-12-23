@@ -21,7 +21,7 @@ let squatStage = 'up';
 let lungeStage = 'standing';
 
 // Стабилизация
-const HISTORY_LENGTH = 5;
+const HISTORY_LENGTH = 3; // Уменьшено для более быстрого отклика
 let exerciseHistory = new Array(HISTORY_LENGTH).fill('none');
 let historyIndex = 0;
 
@@ -78,16 +78,6 @@ function calculateAngle(a, b, c) {
 }
 
 /**
- * Вычисление вертикальности тела (плечи-бедра-лодыжки)
- */
-function calculateBodyAngle(shoulder, hip, ankle) {
-    // Угол между вертикалью и линией плечо-бедро
-    const dx = hip.x - shoulder.x;
-    const dy = hip.y - shoulder.y;
-    return Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
-}
-
-/**
  * Находим самое частое значение в массиве
  */
 function mostFrequent(arr) {
@@ -124,11 +114,6 @@ function detectRawExercise(landmarks) {
     const rightKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
     const avgKneeAngle = (leftKneeAngle + rightKneeAngle) / 2;
     
-    // Углы в бедрах
-    const leftHipAngle = calculateAngle(lShoulder, lHip, lKnee);
-    const rightHipAngle = calculateAngle(rShoulder, rHip, rKnee);
-    const avgHipAngle = (leftHipAngle + rightHipAngle) / 2;
-    
     // Углы в локтях (для планки)
     const leftElbowAngle = calculateAngle(lShoulder, lElbow, lWrist);
     const rightElbowAngle = calculateAngle(rShoulder, rElbow, rWrist);
@@ -142,96 +127,93 @@ function detectRawExercise(landmarks) {
     const avgHipY = (lHip.y + rHip.y) / 2;
     const avgAnkleY = (lAnkle.y + rAnkle.y) / 2;
     
-    // Вертикальная разница между плечами и бедрами
-    const shoulderToHipDiff = Math.abs(avgShoulderY - avgHipY);
-    const hipToAnkleDiff = Math.abs(avgHipY - avgAnkleY);
+    // Ключевой показатель: разница высот плеч и лодыжек
+    const shoulderToAnkleDiff = Math.abs(avgShoulderY - avgAnkleY);
     
-    // Определяем, горизонтально ли тело (для планки)
-    const bodyIsHorizontal = shoulderToHipDiff < 0.1 && hipToAnkleDiff < 0.3;
-    
-    // Определяем, вертикально ли тело (для приседаний/выпадов)
-    const bodyIsVertical = shoulderToHipDiff > 0.2;
+    // Определяем горизонтальность и вертикальность тела
+    const bodyIsHorizontal = shoulderToAnkleDiff < 0.4; // Меньшая разница = горизонтальнее
+    const bodyIsVertical = shoulderToAnkleDiff > 0.6; // Большая разница = вертикальнее
     
     // Разница высоты между левой и правой стороной
     const shoulderHeightDiff = Math.abs(lShoulder.y - rShoulder.y);
     const hipHeightDiff = Math.abs(lHip.y - rHip.y);
     const ankleHeightDiff = Math.abs(lAnkle.y - rAnkle.y);
 
-    // 1. ПЛАНКА - САМЫЕ СТРОГИЕ УСЛОВИЯ
-    const isPlank = 
-        // Тело должно быть горизонтально
-        bodyIsHorizontal &&
-        // Ноги почти прямые
-        leftKneeAngle > 165 &&
-        rightKneeAngle > 165 &&
-        // Локти могут быть согнуты (отжимание) или прямые (классическая планка)
-        // Не проверяем углы локтей, так как есть разные варианты планки
-        // Плечи и бедра ровные (малая асимметрия)
-        shoulderHeightDiff < 0.08 &&
-        hipHeightDiff < 0.08 &&
-        // Голова ниже плеч (для планки на локтях)
-        nose.y > avgShoulderY &&
-        // Колени и лодыжки примерно на одном уровне
-        Math.abs(lKnee.y - rKnee.y) < 0.1 &&
-        Math.abs(lAnkle.y - rAnkle.y) < 0.1;
-
-    // 2. ПРИСЕДАНИЯ - более мягкие условия, но специфичные
-    const isSquat = 
-        // Тело вертикально или слегка наклонено
-        bodyIsVertical &&
-        // ОБЕ ноги согнуты (это ключевое отличие от выпада)
-        leftKneeAngle < 140 &&
-        rightKneeAngle < 140 &&
-        // Симметрично (разница небольшая)
-        kneeDiff < 40 &&
-        // Бедра ниже плеч
-        avgHipY > avgShoulderY + 0.1 &&
-        // Ноги не слишком широко расставлены (опционально, но помогает отличить от планки)
-        Math.abs(lHip.x - rHip.x) < 0.4;
-
-    // 3. ВЫПАДЫ - асимметрия как главный признак
+    // 1. ВЫПАДЫ - асимметрия как главный признак (проверяем первыми)
     const isLunge = 
-        // Большая разница в углах коленей
-        kneeDiff > 50 &&
+        // Большая разница в углах коленей (главный признак)
+        kneeDiff > 60 &&
         // Одно колено сильно согнуто
-        Math.min(leftKneeAngle, rightKneeAngle) < 110 &&
+        Math.min(leftKneeAngle, rightKneeAngle) < 100 &&
         // Другое колено почти прямо или слегка согнуто
         Math.max(leftKneeAngle, rightKneeAngle) > 140 &&
         // Бедра на разной высоте
         hipHeightDiff > 0.15 &&
         // Лодыжки на разной высоте
         ankleHeightDiff > 0.2 &&
-        // Тело вертикально
+        // Тело вертикально или почти вертикально
         bodyIsVertical;
 
-    // Определяем с приоритетом: сначала самые строгие условия
-    if (isPlank) {
-        console.log("Определена планка:", { 
-            leftKneeAngle, rightKneeAngle, 
-            bodyIsHorizontal, shoulderHeightDiff, hipHeightDiff 
-        });
-        return 'plank';
-    }
-    
+    // 2. ПЛАНКА - горизонтальность как главный признак
+    const isPlank = 
+        // Тело должно быть горизонтально (главный признак!)
+        bodyIsHorizontal &&
+        // Плечи выше бедер (проверка ориентации)
+        avgShoulderY < avgHipY &&
+        // Ноги почти прямые (колени не сильно согнуты)
+        leftKneeAngle > 150 &&
+        rightKneeAngle > 150 &&
+        // Симметрия (обе стороны на одном уровне)
+        shoulderHeightDiff < 0.1 &&
+        hipHeightDiff < 0.1 &&
+        // Локти могут быть согнуты (отжимание) или прямые
+        (avgElbowAngle > 140 || avgElbowAngle < 90); // Допускаем и прямые и согнутые локти
+
+    // 3. ПРИСЕДАНИЯ - симметричное сгибание (проверяем последними)
+    const isSquat = 
+        // ОБЕ ноги согнуты симметрично (главный признак!)
+        leftKneeAngle < 130 &&
+        rightKneeAngle < 130 &&
+        // Симметрично (разница небольшая)
+        kneeDiff < 30 &&
+        // Тело вертикально или слегка наклонено вперед
+        bodyIsVertical &&
+        // Бедра ниже плеч (приседаем вниз)
+        avgHipY > avgShoulderY &&
+        // Лодыжки примерно на одном уровне (симметрия)
+        ankleHeightDiff < 0.15;
+
+    // Определяем с приоритетом: сначала самые уникальные признаки
     if (isLunge) {
         console.log("Определен выпад:", { 
             kneeDiff, leftKneeAngle, rightKneeAngle,
-            hipHeightDiff, ankleHeightDiff 
+            hipHeightDiff, ankleHeightDiff,
+            bodyIsVertical 
         });
         return 'lunges';
+    }
+    
+    if (isPlank) {
+        console.log("Определена планка:", { 
+            leftKneeAngle, rightKneeAngle, 
+            bodyIsHorizontal, shoulderToAnkleDiff,
+            shoulderHeightDiff, hipHeightDiff 
+        });
+        return 'plank';
     }
     
     if (isSquat) {
         console.log("Определен присед:", { 
             leftKneeAngle, rightKneeAngle, kneeDiff,
-            avgHipY, avgShoulderY 
+            avgHipY, avgShoulderY,
+            bodyIsVertical 
         });
         return 'squats';
     }
 
     console.log("Ничего не определено:", { 
         leftKneeAngle, rightKneeAngle, 
-        bodyIsHorizontal, bodyIsVertical,
+        bodyIsHorizontal, bodyIsVertical, shoulderToAnkleDiff,
         kneeDiff, hipHeightDiff 
     });
     return 'none';
